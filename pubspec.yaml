@@ -1,0 +1,15 @@
+name: window_decoration_workspace
+description: A workspace for the window_decoration plugin and related packages
+publish_to: none
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+workspace:
+  - packages/window_decoration
+  - packages/window_decoration_linux
+  - packages/window_decoration_macos
+  - packages/window_decoration_platform_interface
+  - packages/window_decoration_web
+  - packages/window_decoration_windows
+  - example

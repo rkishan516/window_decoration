@@ -1,0 +1,3 @@
+# Disable LFS for icon files - store as regular git objects
+*.png -filter -diff -merge -text
+*.ico -filter -diff -merge -text
