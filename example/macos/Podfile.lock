@@ -1,0 +1,22 @@
+PODS:
+  - FlutterMacOS (1.0.0)
+  - window_decoration_macos (0.1.0):
+    - FlutterMacOS
+
+DEPENDENCIES:
+  - FlutterMacOS (from `Flutter/ephemeral`)
+  - window_decoration_macos (from `Flutter/ephemeral/.symlinks/plugins/window_decoration_macos/macos`)
+
+EXTERNAL SOURCES:
+  FlutterMacOS:
+    :path: Flutter/ephemeral
+  window_decoration_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/window_decoration_macos/macos
+
+SPEC CHECKSUMS:
+  FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
+  window_decoration_macos: 014a397ce69285ec2a3ce2f0c2c8e60839ad1afc
+
+PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
+
+COCOAPODS: 1.16.2

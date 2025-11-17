@@ -1,0 +1,23 @@
+name: window_decoration_example
+description: Example app demonstrating window_decoration package
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.10.0-290.4.beta <4.0.0'
+  flutter: '>=3.38.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  window_decoration:
+    path: ../
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

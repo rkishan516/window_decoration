@@ -1,0 +1,29 @@
+name: window_decoration_windows
+description: Windows implementation of the window_decoration plugin using Win32 FFI
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+  flutter: '>=3.38.1'
+
+dependencies:
+  ffi: ^2.1.0
+  flutter:
+    sdk: flutter
+  window_decoration_platform_interface:
+    path: ../window_decoration_platform_interface
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    implements: window_decoration
+    platforms:
+      windows:
+        dartPluginClass: WindowDecorationWindows
+        ffiPlugin: true

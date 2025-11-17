@@ -1,0 +1,29 @@
+name: window_decoration_web
+description: Web implementation of the window_decoration plugin
+version: 0.1.0
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+  flutter: '>=3.38.1'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  window_decoration_platform_interface:
+    path: ../window_decoration_platform_interface
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    implements: window_decoration
+    platforms:
+      web:
+        pluginClass: WindowDecorationWebPlugin
+        fileName: window_decoration_web.dart
