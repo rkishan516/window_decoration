@@ -11,12 +11,32 @@ project(${PROJECT_NAME} LANGUAGES CXX)
 # not be changed.
 set(PLUGIN_NAME "window_decoration_windows_plugin")
 
-# This is a minimal stub for an FFI plugin.
-# FFI plugins don't have native code to compile, but the Flutter build
-# system requires a CMakeLists.txt file to be present.
+# Build the native plugin library
+add_library(${PLUGIN_NAME} SHARED
+  "window_decoration_windows_plugin.cpp"
+)
 
-# Define an empty bundled libraries list
+# Set C++ standard
+set_target_properties(${PLUGIN_NAME} PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED YES
+)
+
+# Windows-specific compiler definitions
+target_compile_definitions(${PLUGIN_NAME} PRIVATE
+  UNICODE
+  _UNICODE
+  WIN32_LEAN_AND_MEAN
+)
+
+# Link required Windows libraries
+target_link_libraries(${PLUGIN_NAME} PRIVATE
+  dwmapi
+  comctl32
+)
+
+# Bundle the plugin DLL with the Flutter app
 set(window_decoration_windows_bundled_libraries
-  ""
+  "$<TARGET_FILE:${PLUGIN_NAME}>"
   PARENT_SCOPE
 )

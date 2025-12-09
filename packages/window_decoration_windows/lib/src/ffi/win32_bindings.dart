@@ -1,12 +1,61 @@
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, prefer_expression_function_bodies
 
 import 'dart:ffi';
+import 'dart:io';
 
 /// Win32 API bindings for window manipulation
 class Win32Bindings {
   // Load user32.dll and dwmapi.dll
   static final DynamicLibrary _user32 = DynamicLibrary.open('user32.dll');
   static final DynamicLibrary _dwmapi = DynamicLibrary.open('dwmapi.dll');
+
+  // Load our native plugin DLL for custom frame handling
+  static DynamicLibrary? _pluginLib;
+
+  /// Initialize the native plugin library
+  /// This must be called before using enableCustomFrame
+  static void initializePlugin(String pluginPath) {
+    if (_pluginLib == null) {
+      _pluginLib = DynamicLibrary.open(pluginPath);
+    }
+  }
+
+  /// Try to auto-detect and load the plugin from common locations
+  static bool tryAutoInitializePlugin() {
+    if (_pluginLib != null) return true;
+
+    // Try common locations where Flutter places plugin DLLs
+    final possiblePaths = [
+      'window_decoration_windows_plugin.dll',
+      'plugins/window_decoration_windows/window_decoration_windows_plugin.dll',
+    ];
+
+    for (final path in possiblePaths) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) {
+          _pluginLib = DynamicLibrary.open(path);
+          return true;
+        }
+      } catch (_) {
+        // Continue trying other paths
+      }
+    }
+
+    // Try loading from the executable directory
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final pluginPath = '$exeDir/window_decoration_windows_plugin.dll';
+      if (File(pluginPath).existsSync()) {
+        _pluginLib = DynamicLibrary.open(pluginPath);
+        return true;
+      }
+    } catch (_) {
+      // Failed to load
+    }
+
+    return false;
+  }
 
   // ==========================================================================
   // Window Positioning & Size (user32.dll)
@@ -269,6 +318,88 @@ class Win32Bindings {
 
   static int showWindow(int hwnd, int cmdShow) {
     return _ShowWindow(hwnd, cmdShow);
+  }
+
+  // ==========================================================================
+  // Custom Frame Functions (from our native plugin)
+  // ==========================================================================
+
+  /// Enable or disable custom frameless window handling
+  /// This handles WM_NCCALCSIZE to remove the black bar when title bar is hidden
+  static void enableCustomFrame(int hwnd, bool enable) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError(
+          'Native plugin not loaded. Call Win32Bindings.initializePlugin() first '
+          'or ensure window_decoration_windows_plugin.dll is in the app directory.',
+        );
+      }
+    }
+
+    final enableCustomFrameFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd, Bool enable),
+        void Function(int hwnd, bool enable)>('EnableCustomFrame');
+
+    enableCustomFrameFunc(hwnd, enable);
+  }
+
+  /// Check if custom frame handling is currently enabled for a window
+  static bool isCustomFrameEnabled(int hwnd) {
+    if (_pluginLib == null) {
+      return false;
+    }
+
+    final isEnabledFunc = _pluginLib!.lookupFunction<
+        Bool Function(IntPtr hwnd),
+        bool Function(int hwnd)>('IsCustomFrameEnabled');
+
+    return isEnabledFunc(hwnd);
+  }
+
+  /// Start window resize from a specific edge
+  /// edge: 0=left, 1=right, 2=top, 3=bottom, 4=topLeft, 5=topRight, 6=bottomLeft, 7=bottomRight
+  static void startResize(int hwnd, int edge) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError('Native plugin not loaded.');
+      }
+    }
+
+    final startResizeFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd, Int32 edge),
+        void Function(int hwnd, int edge)>('StartResize');
+
+    startResizeFunc(hwnd, edge);
+  }
+
+  /// Start window drag/move operation
+  static void startDrag(int hwnd) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError('Native plugin not loaded.');
+      }
+    }
+
+    final startDragFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd),
+        void Function(int hwnd)>('StartDrag');
+
+    startDragFunc(hwnd);
+  }
+
+  /// Get the resize border width in pixels
+  static int getResizeBorderWidth() {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        return 8; // Default fallback
+      }
+    }
+
+    final getBorderWidthFunc = _pluginLib!.lookupFunction<
+        Int32 Function(),
+        int Function()>('GetResizeBorderWidth');
+
+    return getBorderWidthFunc();
   }
 }
 

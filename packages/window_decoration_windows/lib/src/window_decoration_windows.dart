@@ -321,15 +321,23 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
   }
 
   void _restoreStandardTitleBar() {
+    // Disable custom frame handling first (if it was enabled)
+    // This restores normal WM_NCCALCSIZE behavior
+    try {
+      Win32Bindings.enableCustomFrame(_hwnd, false);
+    } catch (_) {
+      // Plugin might not be loaded, continue with style restoration
+    }
+
     // Restore standard window style with title bar
     final currentStyle = Win32Bindings.getWindowLongPtr(
       _hwnd,
       Win32Bindings.GWL_STYLE,
     );
 
-    // Add back caption and frame
+    // Remove WS_POPUP and add back caption and frame
     final newStyle =
-        currentStyle |
+        (currentStyle & ~Win32Bindings.WS_POPUP) |
         Win32Bindings.WS_CAPTION |
         Win32Bindings.WS_THICKFRAME |
         Win32Bindings.WS_SYSMENU |
@@ -372,6 +380,11 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
         Win32Bindings.WS_MAXIMIZEBOX;
 
     Win32Bindings.setWindowLongPtr(_hwnd, Win32Bindings.GWL_STYLE, newStyle);
+
+    // Enable custom frame handling to remove the black bar at the top
+    // This uses native code to handle WM_NCCALCSIZE and properly adjust
+    // the client area so Flutter content extends to the window edges
+    Win32Bindings.enableCustomFrame(_hwnd, true);
   }
 
   void _createTransparentTitleBar() {
@@ -624,5 +637,45 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
       Win32Bindings.GWL_EXSTYLE,
     );
     return (exStyle & Win32Bindings.WS_EX_TOPMOST) != 0;
+  }
+
+  // ==========================================================================
+  // Resize and Drag APIs (for frameless windows)
+  // ==========================================================================
+
+  /// Start resizing the window from a specific edge.
+  /// Call this from a mouse down event on your custom resize border.
+  ///
+  /// Example usage with a GestureDetector:
+  /// ```dart
+  /// GestureDetector(
+  ///   onPanStart: (_) => windowDecoration.startResize(ResizeEdge.right),
+  ///   child: Container(width: 8, color: Colors.transparent),
+  /// )
+  /// ```
+  Future<void> startResize(ResizeEdge edge) async {
+    _checkInitialized();
+    Win32Bindings.startResize(_hwnd, edge.value);
+  }
+
+  /// Start dragging/moving the window.
+  /// Call this from a mouse down event on your custom title bar area.
+  ///
+  /// Example usage:
+  /// ```dart
+  /// GestureDetector(
+  ///   onPanStart: (_) => windowDecoration.startDrag(),
+  ///   child: YourTitleBarWidget(),
+  /// )
+  /// ```
+  Future<void> startDrag() async {
+    _checkInitialized();
+    Win32Bindings.startDrag(_hwnd);
+  }
+
+  /// Get the recommended resize border width in pixels.
+  /// Use this to determine how thick your resize borders should be.
+  int getResizeBorderWidth() {
+    return Win32Bindings.getResizeBorderWidth();
   }
 }
