@@ -1,46 +1,238 @@
 // Window Decoration Windows Plugin
 // Native C++ implementation for frameless window support
-// Handles WM_NCCALCSIZE to remove the black bar when title bar is hidden
-// Handles WM_NCHITTEST to enable window resizing from edges and corners
+// Handles WM_NCCALCSIZE to remove the title bar while keeping window decorations
+// Handles WM_NCHITTEST for resize borders, custom caption, and snap layout support
 
 #include <windows.h>
 #include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <unordered_map>
+#include <VersionHelpers.h>
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "comctl32.lib")
 
+// Frame mode determines how the window frame is handled
+enum class FrameMode {
+    Normal,      // Standard Windows frame with title bar
+    Hidden,      // Legacy hidden mode (borderless popup)
+    CustomFrame  // Windows 11 style: no title bar but keeps decorations
+};
+
+// Caption button type for hit testing
+enum class CaptionButton {
+    None = 0,
+    Minimize = 1,
+    Maximize = 2,
+    Close = 3
+};
+
+// Rectangle for caption button zones
+struct ButtonRect {
+    int left;
+    int top;
+    int right;
+    int bottom;
+};
+
 // Per-window state
 struct WindowState {
     WNDPROC originalWndProc;
-    bool customFrameEnabled;
+    FrameMode frameMode;
+
+    // Custom caption area (relative to client area, in pixels)
+    int captionHeight;
+
+    // Caption button zones (in client coordinates)
+    ButtonRect minimizeButton;
+    ButtonRect maximizeButton;
+    ButtonRect closeButton;
+
+    // Whether caption buttons are defined
+    bool hasCaptionButtons;
 };
 
 // Global state for multi-window support
 static std::unordered_map<HWND, WindowState> g_window_states;
 static HHOOK g_getmsg_hook = nullptr;
 static int g_hook_ref_count = 0;
-static bool g_was_on_resize_border = false;  // Track if we were on resize border
+static bool g_was_on_resize_border = false;
 
 // Resize border width in pixels
 static const int RESIZE_BORDER_WIDTH = 8;
 
-// Get the resize frame thickness
+// Default caption height if not specified
+static const int DEFAULT_CAPTION_HEIGHT = 32;
+
+// Get DPI for window
+static UINT GetDpiForWindowSafe(HWND hwnd) {
+    // Try GetDpiForWindow (Windows 10 1607+)
+    typedef UINT (WINAPI *GetDpiForWindowFunc)(HWND);
+    static GetDpiForWindowFunc pGetDpiForWindow = nullptr;
+    static bool loaded = false;
+
+    if (!loaded) {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32) {
+            pGetDpiForWindow = (GetDpiForWindowFunc)GetProcAddress(user32, "GetDpiForWindow");
+        }
+        loaded = true;
+    }
+
+    if (pGetDpiForWindow) {
+        return pGetDpiForWindow(hwnd);
+    }
+
+    // Fallback: use DC
+    HDC hdc = GetDC(hwnd);
+    UINT dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+    ReleaseDC(hwnd, hdc);
+    return dpi;
+}
+
+// Get system metrics for specific DPI
+static int GetSystemMetricsForDpiSafe(int nIndex, UINT dpi) {
+    // Try GetSystemMetricsForDpi (Windows 10 1607+)
+    typedef int (WINAPI *GetSystemMetricsForDpiFunc)(int, UINT);
+    static GetSystemMetricsForDpiFunc pGetSystemMetricsForDpi = nullptr;
+    static bool loaded = false;
+
+    if (!loaded) {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32) {
+            pGetSystemMetricsForDpi = (GetSystemMetricsForDpiFunc)GetProcAddress(user32, "GetSystemMetricsForDpi");
+        }
+        loaded = true;
+    }
+
+    if (pGetSystemMetricsForDpi) {
+        return pGetSystemMetricsForDpi(nIndex, dpi);
+    }
+
+    // Fallback: use regular GetSystemMetrics and scale
+    int value = GetSystemMetrics(nIndex);
+    return MulDiv(value, dpi, 96);
+}
+
+// Check if running on Windows 11
+static bool IsWindows11OrGreater() {
+    OSVERSIONINFOEXW osvi = { sizeof(osvi), 0 };
+    DWORDLONG conditionMask = 0;
+
+    VER_SET_CONDITION(conditionMask, VER_MAJORVERSION, VER_GREATER_EQUAL);
+    VER_SET_CONDITION(conditionMask, VER_MINORVERSION, VER_GREATER_EQUAL);
+    VER_SET_CONDITION(conditionMask, VER_BUILDNUMBER, VER_GREATER_EQUAL);
+
+    osvi.dwMajorVersion = 10;
+    osvi.dwMinorVersion = 0;
+    osvi.dwBuildNumber = 22000;  // Windows 11 starts at build 22000
+
+    return VerifyVersionInfoW(&osvi, VER_MAJORVERSION | VER_MINORVERSION | VER_BUILDNUMBER, conditionMask) != FALSE;
+}
+
+// Get the resize frame thickness (DPI-aware)
 static int GetResizeFrameThickness(HWND hwnd) {
-    // SM_CXSIZEFRAME + SM_CXPADDEDBORDER gives us the resize border width
-    int frame = GetSystemMetrics(SM_CXSIZEFRAME);
-    int padding = GetSystemMetrics(SM_CXPADDEDBORDER);
+    UINT dpi = GetDpiForWindowSafe(hwnd);
+    int frame = GetSystemMetricsForDpiSafe(SM_CXFRAME, dpi);
+    int padding = GetSystemMetricsForDpiSafe(SM_CXPADDEDBORDER, dpi);
     return frame + padding;
 }
 
-// Handle hit testing for resize borders
-static LRESULT HandleNcHitTest(HWND hWnd, LPARAM lParam) {
-    // Get mouse position in screen coordinates
+// Check if point is inside a rectangle
+static bool PointInRect(int x, int y, const ButtonRect& rect) {
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+}
+
+// Handle hit testing for the custom frame mode (Windows 11 File Explorer style)
+static LRESULT HandleCustomFrameHitTest(HWND hWnd, LPARAM lParam, const WindowState& state) {
     POINT mousePos = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
-    // Get window rect
+    RECT windowRect;
+    GetWindowRect(hWnd, &windowRect);
+
+    UINT dpi = GetDpiForWindowSafe(hWnd);
+    int frameX = GetSystemMetricsForDpiSafe(SM_CXFRAME, dpi);
+    int frameY = GetSystemMetricsForDpiSafe(SM_CYFRAME, dpi);
+    int padding = GetSystemMetricsForDpiSafe(SM_CXPADDEDBORDER, dpi);
+
+    int borderWidth = frameX + padding;
+    int borderHeight = frameY + padding;
+
+    // Calculate position relative to window
+    int x = mousePos.x - windowRect.left;
+    int y = mousePos.y - windowRect.top;
+    int windowWidth = windowRect.right - windowRect.left;
+    int windowHeight = windowRect.bottom - windowRect.top;
+
+    // Check if maximized - no resize borders when maximized
+    bool isMaximized = IsZoomed(hWnd);
+
+    if (!isMaximized) {
+        // Check resize borders first
+        bool isLeft = x < borderWidth;
+        bool isRight = x >= windowWidth - borderWidth;
+        bool isTop = y < borderHeight;
+        bool isBottom = y >= windowHeight - borderHeight;
+
+        // Corners have priority
+        if (isTop && isLeft) return HTTOPLEFT;
+        if (isTop && isRight) return HTTOPRIGHT;
+        if (isBottom && isLeft) return HTBOTTOMLEFT;
+        if (isBottom && isRight) return HTBOTTOMRIGHT;
+
+        // Edges
+        if (isLeft) return HTLEFT;
+        if (isRight) return HTRIGHT;
+        if (isBottom) return HTBOTTOM;
+
+        // Top edge - this is special because it overlaps with caption area
+        // Only report HTTOP at the very edge (a few pixels)
+        if (y < borderHeight / 2) return HTTOP;
+    }
+
+    // Convert to client coordinates for caption area detection
+    POINT clientPos = mousePos;
+    ScreenToClient(hWnd, &clientPos);
+
+    // Check caption button areas first
+    if (state.hasCaptionButtons) {
+        // Close button
+        if (PointInRect(clientPos.x, clientPos.y, state.closeButton)) {
+            return HTCLOSE;
+        }
+
+        // Maximize button - return HTMAXBUTTON for Windows 11 snap layout support
+        if (PointInRect(clientPos.x, clientPos.y, state.maximizeButton)) {
+            return HTMAXBUTTON;
+        }
+
+        // Minimize button
+        if (PointInRect(clientPos.x, clientPos.y, state.minimizeButton)) {
+            return HTMINBUTTON;
+        }
+    }
+
+    // Check if in caption area (custom title bar region)
+    int captionHeight = state.captionHeight > 0 ? state.captionHeight : DEFAULT_CAPTION_HEIGHT;
+
+    // Scale caption height for DPI
+    captionHeight = MulDiv(captionHeight, dpi, 96);
+
+    // Account for the top border when not maximized
+    int topOffset = isMaximized ? 0 : borderHeight;
+
+    if (clientPos.y < captionHeight) {
+        return HTCAPTION;
+    }
+
+    return HTCLIENT;
+}
+
+// Handle hit testing for legacy hidden mode (borderless)
+static LRESULT HandleHiddenFrameHitTest(HWND hWnd, LPARAM lParam) {
+    POINT mousePos = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
     RECT windowRect;
     GetWindowRect(hWnd, &windowRect);
 
@@ -49,20 +241,16 @@ static LRESULT HandleNcHitTest(HWND hWnd, LPARAM lParam) {
         return HTCLIENT;
     }
 
-    // Get the resize border thickness
     int borderWidth = GetResizeFrameThickness(hWnd);
     if (borderWidth < RESIZE_BORDER_WIDTH) {
         borderWidth = RESIZE_BORDER_WIDTH;
     }
 
-    // Calculate positions relative to window
     int x = mousePos.x - windowRect.left;
     int y = mousePos.y - windowRect.top;
     int windowWidth = windowRect.right - windowRect.left;
     int windowHeight = windowRect.bottom - windowRect.top;
 
-    // Check corners first (they take priority)
-    // Use a larger corner zone for easier grabbing
     int cornerSize = borderWidth * 2;
 
     bool isLeft = x < borderWidth;
@@ -70,65 +258,28 @@ static LRESULT HandleNcHitTest(HWND hWnd, LPARAM lParam) {
     bool isTop = y < borderWidth;
     bool isBottom = y >= windowHeight - borderWidth;
 
-    // Extended corner detection
     bool isNearLeft = x < cornerSize;
     bool isNearRight = x >= windowWidth - cornerSize;
     bool isNearTop = y < cornerSize;
     bool isNearBottom = y >= windowHeight - cornerSize;
 
-    // Top-left corner
-    if (isTop && isNearLeft) {
-        return HTTOPLEFT;
-    }
-    if (isLeft && isNearTop) {
-        return HTTOPLEFT;
-    }
-    // Top-right corner
-    if (isTop && isNearRight) {
-        return HTTOPRIGHT;
-    }
-    if (isRight && isNearTop) {
-        return HTTOPRIGHT;
-    }
-    // Bottom-left corner
-    if (isBottom && isNearLeft) {
-        return HTBOTTOMLEFT;
-    }
-    if (isLeft && isNearBottom) {
-        return HTBOTTOMLEFT;
-    }
-    // Bottom-right corner
-    if (isBottom && isNearRight) {
-        return HTBOTTOMRIGHT;
-    }
-    if (isRight && isNearBottom) {
-        return HTBOTTOMRIGHT;
-    }
-    // Left edge
-    if (isLeft) {
-        return HTLEFT;
-    }
-    // Right edge
-    if (isRight) {
-        return HTRIGHT;
-    }
-    // Top edge
-    if (isTop) {
-        return HTTOP;
-    }
-    // Bottom edge
-    if (isBottom) {
-        return HTBOTTOM;
-    }
+    // Corners
+    if (isTop && isNearLeft) return HTTOPLEFT;
+    if (isLeft && isNearTop) return HTTOPLEFT;
+    if (isTop && isNearRight) return HTTOPRIGHT;
+    if (isRight && isNearTop) return HTTOPRIGHT;
+    if (isBottom && isNearLeft) return HTBOTTOMLEFT;
+    if (isLeft && isNearBottom) return HTBOTTOMLEFT;
+    if (isBottom && isNearRight) return HTBOTTOMRIGHT;
+    if (isRight && isNearBottom) return HTBOTTOMRIGHT;
 
-    // Not on any border - client area
+    // Edges
+    if (isLeft) return HTLEFT;
+    if (isRight) return HTRIGHT;
+    if (isTop) return HTTOP;
+    if (isBottom) return HTBOTTOM;
+
     return HTCLIENT;
-}
-
-// Get the DPI scale factor for the window
-static double GetScaleFactor(HWND hwnd) {
-    UINT dpi = GetDpiForWindow(hwnd);
-    return static_cast<double>(dpi) / 96.0;
 }
 
 // Get the appropriate cursor for a hit test result
@@ -153,56 +304,41 @@ static HCURSOR GetCursorForHitTest(LRESULT hitTest) {
 
 // Check if point is in resize border area (in screen coordinates)
 static LRESULT HitTestResizeBorder(HWND hwnd, int screenX, int screenY) {
-    if (IsZoomed(hwnd)) {
-        return HTNOWHERE; // No resize when maximized
+    auto it = g_window_states.find(hwnd);
+    if (it == g_window_states.end()) return HTNOWHERE;
+
+    const WindowState& state = it->second;
+
+    if (state.frameMode == FrameMode::CustomFrame) {
+        LPARAM lParam = MAKELPARAM(screenX, screenY);
+        LRESULT hit = HandleCustomFrameHitTest(hwnd, lParam, state);
+        if (hit != HTCLIENT && hit != HTCAPTION && hit != HTCLOSE &&
+            hit != HTMAXBUTTON && hit != HTMINBUTTON) {
+            return hit;
+        }
+        return HTNOWHERE;
+    } else if (state.frameMode == FrameMode::Hidden) {
+        LPARAM lParam = MAKELPARAM(screenX, screenY);
+        LRESULT hit = HandleHiddenFrameHitTest(hwnd, lParam);
+        if (hit != HTCLIENT) {
+            return hit;
+        }
     }
-
-    RECT windowRect;
-    GetWindowRect(hwnd, &windowRect);
-
-    int borderWidth = GetResizeFrameThickness(hwnd);
-    if (borderWidth < RESIZE_BORDER_WIDTH) {
-        borderWidth = RESIZE_BORDER_WIDTH;
-    }
-
-    int x = screenX - windowRect.left;
-    int y = screenY - windowRect.top;
-    int windowWidth = windowRect.right - windowRect.left;
-    int windowHeight = windowRect.bottom - windowRect.top;
-
-    bool isLeft = x < borderWidth;
-    bool isRight = x >= windowWidth - borderWidth;
-    bool isTop = y < borderWidth;
-    bool isBottom = y >= windowHeight - borderWidth;
-
-    // Corners
-    if (isTop && isLeft) return HTTOPLEFT;
-    if (isTop && isRight) return HTTOPRIGHT;
-    if (isBottom && isLeft) return HTBOTTOMLEFT;
-    if (isBottom && isRight) return HTBOTTOMRIGHT;
-
-    // Edges
-    if (isLeft) return HTLEFT;
-    if (isRight) return HTRIGHT;
-    if (isTop) return HTTOP;
-    if (isBottom) return HTBOTTOM;
 
     return HTNOWHERE;
 }
 
-// Find the managed window for a given HWND (could be the window itself or its parent)
+// Find the managed window for a given HWND
 static HWND FindManagedWindow(HWND hwnd) {
-    // Check if it's a managed window directly
     auto it = g_window_states.find(hwnd);
-    if (it != g_window_states.end() && it->second.customFrameEnabled) {
+    if (it != g_window_states.end() && it->second.frameMode != FrameMode::Normal) {
         return hwnd;
     }
 
-    // Check if its parent is a managed window
     HWND parent = GetParent(hwnd);
     if (parent != nullptr) {
         auto parentIt = g_window_states.find(parent);
-        if (parentIt != g_window_states.end() && parentIt->second.customFrameEnabled) {
+        if (parentIt != g_window_states.end() && parentIt->second.frameMode != FrameMode::Normal) {
             return parent;
         }
     }
@@ -210,23 +346,20 @@ static HWND FindManagedWindow(HWND hwnd) {
     return nullptr;
 }
 
-// GetMessage hook to intercept messages before they're dispatched
+// GetMessage hook to intercept messages before dispatch
 LRESULT CALLBACK GetMsgProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0) {
         MSG* msg = reinterpret_cast<MSG*>(lParam);
 
-        // Find which managed window this message belongs to
         HWND managedWindow = FindManagedWindow(msg->hwnd);
 
         if (managedWindow != nullptr) {
-            // Handle cursor changes on mouse move
             if (msg->message == WM_MOUSEMOVE || msg->message == WM_NCMOUSEMOVE) {
                 POINT pt;
                 GetCursorPos(&pt);
                 LRESULT hitTest = HitTestResizeBorder(managedWindow, pt.x, pt.y);
 
                 if (hitTest != HTNOWHERE) {
-                    // On resize border - show resize cursor
                     HCURSOR cursor = GetCursorForHitTest(hitTest);
                     if (cursor) {
                         SetCursor(cursor);
@@ -238,20 +371,15 @@ LRESULT CALLBACK GetMsgProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // Handle mouse click to start resize
             if (msg->message == WM_LBUTTONDOWN) {
                 POINT pt;
                 GetCursorPos(&pt);
                 LRESULT hitTest = HitTestResizeBorder(managedWindow, pt.x, pt.y);
 
                 if (hitTest != HTNOWHERE) {
-                    // Change the message to prevent Flutter from handling it
                     msg->message = WM_NULL;
-
-                    // Start the resize operation
                     ReleaseCapture();
-                    PostMessage(managedWindow, WM_NCLBUTTONDOWN, hitTest,
-                               MAKELPARAM(pt.x, pt.y));
+                    PostMessage(managedWindow, WM_NCLBUTTONDOWN, hitTest, MAKELPARAM(pt.x, pt.y));
                 }
             }
         }
@@ -260,9 +388,8 @@ LRESULT CALLBACK GetMsgProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(g_getmsg_hook, nCode, wParam, lParam);
 }
 
-// Replacement window procedure that intercepts messages before Flutter's WndProc
-LRESULT CALLBACK FramelessWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    // Look up this window's state
+// Replacement window procedure
+LRESULT CALLBACK CustomFrameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     auto it = g_window_states.find(hWnd);
     if (it == g_window_states.end()) {
         return DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -270,24 +397,60 @@ LRESULT CALLBACK FramelessWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
     WindowState& state = it->second;
 
-    if (state.customFrameEnabled) {
-        // Handle WM_NCHITTEST for resize borders
+    if (state.frameMode == FrameMode::CustomFrame) {
+        // WM_NCCALCSIZE - This is the key to Windows 11 File Explorer style
+        // We adjust the client area to remove the title bar while keeping borders
+        if (uMsg == WM_NCCALCSIZE && wParam == TRUE) {
+            NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+
+            UINT dpi = GetDpiForWindowSafe(hWnd);
+            int frameX = GetSystemMetricsForDpiSafe(SM_CXFRAME, dpi);
+            int frameY = GetSystemMetricsForDpiSafe(SM_CYFRAME, dpi);
+            int padding = GetSystemMetricsForDpiSafe(SM_CXPADDEDBORDER, dpi);
+
+            // Adjust the client rectangle
+            // Keep left, right, and bottom borders for resize
+            // Remove the top border to eliminate title bar
+            params->rgrc[0].left += frameX + padding;
+            params->rgrc[0].right -= frameX + padding;
+            params->rgrc[0].bottom -= frameY + padding;
+
+            if (IsZoomed(hWnd)) {
+                // When maximized, add top padding to prevent content going under taskbar
+                params->rgrc[0].top += frameY + padding;
+            } else {
+                // When not maximized, we need a tiny top margin for the window border
+                // On Windows 11, this is typically 1 pixel
+                if (IsWindows11OrGreater()) {
+                    // Windows 11 has a visible 1px top border that we want to keep
+                    // Don't add anything to top - let DWM draw the border
+                }
+            }
+
+            return 0;
+        }
+
+        // WM_NCHITTEST - Handle hit testing for custom frame
         if (uMsg == WM_NCHITTEST) {
-            // First let DWM handle it
+            // Let DWM handle caption buttons first
             LRESULT dwmResult = 0;
             if (DwmDefWindowProc(hWnd, uMsg, wParam, lParam, &dwmResult)) {
                 return dwmResult;
             }
 
-            // Check for resize borders
-            LRESULT hitTest = HandleNcHitTest(hWnd, lParam);
-            if (hitTest != HTCLIENT) {
-                return hitTest;
-            }
-            // Fall through to original handler for client area
+            return HandleCustomFrameHitTest(hWnd, lParam, state);
         }
 
-        // Handle WM_SETCURSOR to show resize cursors
+        // WM_NCACTIVATE - Prevent default non-client rendering
+        if (uMsg == WM_NCACTIVATE) {
+            // Return TRUE and set lParam to -1 to prevent non-client area redraw
+            if (state.originalWndProc) {
+                return CallWindowProc(state.originalWndProc, hWnd, uMsg, wParam, -1);
+            }
+            return TRUE;
+        }
+
+        // WM_SETCURSOR - Show appropriate cursor
         if (uMsg == WM_SETCURSOR) {
             WORD hitTest = LOWORD(lParam);
             HCURSOR cursor = GetCursorForHitTest(hitTest);
@@ -297,32 +460,81 @@ LRESULT CALLBACK FramelessWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
             }
         }
 
-        // Handle WM_NCACTIVATE to prevent title bar flicker on focus/unfocus
-        // When custom frame is enabled, we prevent Windows from drawing the default
-        // non-client area by returning TRUE without calling DefWindowProc
-        if (uMsg == WM_NCACTIVATE) {
-            // Return TRUE to indicate we handled the activation change
-            // The wParam indicates if window is being activated (TRUE) or deactivated (FALSE)
-            // By not calling DefWindowProc, we prevent Windows from redrawing the non-client area
-            // which causes the flickering effect on focus changes
+        // WM_NCLBUTTONDOWN on maximize button - show snap layout on Windows 11
+        // Windows 11 automatically shows snap layout when HTMAXBUTTON is clicked
 
-            // However, we still need to update the internal activation state
-            // Setting lParam to -1 tells Windows not to redraw the non-client area
+        // WM_CREATE - Force frame change
+        if (uMsg == WM_CREATE) {
+            RECT rcClient;
+            GetWindowRect(hWnd, &rcClient);
+            SetWindowPos(hWnd, nullptr, rcClient.left, rcClient.top,
+                         rcClient.right - rcClient.left, rcClient.bottom - rcClient.top,
+                         SWP_FRAMECHANGED | SWP_NOZORDER);
+        }
+
+        // WM_GETMINMAXINFO - Handle maximized window bounds while preserving min/max constraints
+        if (uMsg == WM_GETMINMAXINFO) {
+            // First, let the original WndProc (Flutter) set its min/max constraints
+            LRESULT result = 0;
+            if (state.originalWndProc) {
+                result = CallWindowProc(state.originalWndProc, hWnd, uMsg, wParam, lParam);
+            }
+
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+
+            // Get the monitor this window is on
+            HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = { sizeof(mi) };
+            if (GetMonitorInfo(monitor, &mi)) {
+                // Only adjust the maximized position and size
+                // This ensures the window doesn't go under the taskbar when maximized
+                // The min/max tracking size constraints from Flutter are preserved
+                mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+                mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+            }
+
+            return result;
+        }
+    } else if (state.frameMode == FrameMode::Hidden) {
+        // Legacy hidden mode handling (borderless popup)
+        if (uMsg == WM_NCHITTEST) {
+            LRESULT dwmResult = 0;
+            if (DwmDefWindowProc(hWnd, uMsg, wParam, lParam, &dwmResult)) {
+                return dwmResult;
+            }
+
+            LRESULT hitTest = HandleHiddenFrameHitTest(hWnd, lParam);
+            if (hitTest != HTCLIENT) {
+                return hitTest;
+            }
+        }
+
+        if (uMsg == WM_SETCURSOR) {
+            WORD hitTest = LOWORD(lParam);
+            HCURSOR cursor = GetCursorForHitTest(hitTest);
+            if (cursor != nullptr) {
+                SetCursor(cursor);
+                return TRUE;
+            }
+        }
+
+        if (uMsg == WM_NCACTIVATE) {
             if (state.originalWndProc) {
                 return CallWindowProc(state.originalWndProc, hWnd, uMsg, wParam, -1);
             }
             return TRUE;
         }
 
-        // Handle WM_NCCALCSIZE to remove the title bar space completely
         if (uMsg == WM_NCCALCSIZE && wParam == TRUE) {
             NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
             RECT originalRect = params->rgrc[0];
 
             if (IsZoomed(hWnd)) {
-                double scaleFactor = GetScaleFactor(hWnd);
-                int frameThickness = static_cast<int>(GetSystemMetrics(SM_CXFRAME) * scaleFactor);
-                int borderPadding = static_cast<int>(GetSystemMetrics(SM_CXPADDEDBORDER) * scaleFactor);
+                UINT dpi = GetDpiForWindowSafe(hWnd);
+                int frameThickness = GetSystemMetricsForDpiSafe(SM_CXFRAME, dpi);
+                int borderPadding = GetSystemMetricsForDpiSafe(SM_CXPADDEDBORDER, dpi);
                 int totalPadding = frameThickness + borderPadding;
 
                 params->rgrc[0].top = originalRect.top + totalPadding;
@@ -344,82 +556,165 @@ LRESULT CALLBACK FramelessWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
     return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
 
-// Enable or disable custom frameless window handling
-// This function is exported and called from Dart via FFI
+// ==========================================================================
+// Exported Functions (called from Dart via FFI)
+// ==========================================================================
+
+// Enable custom frame mode (Windows 11 File Explorer style)
+extern "C" __declspec(dllexport) void EnableCustomFrameMode(HWND hwnd, int captionHeight) {
+    auto it = g_window_states.find(hwnd);
+
+    if (it == g_window_states.end()) {
+        WindowState state = {};
+        state.frameMode = FrameMode::CustomFrame;
+        state.captionHeight = captionHeight > 0 ? captionHeight : DEFAULT_CAPTION_HEIGHT;
+        state.hasCaptionButtons = false;
+
+        state.originalWndProc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(CustomFrameWndProc))
+        );
+
+        g_window_states[hwnd] = state;
+
+        if (g_getmsg_hook == nullptr) {
+            DWORD threadId = GetWindowThreadProcessId(hwnd, nullptr);
+            g_getmsg_hook = SetWindowsHookEx(WH_GETMESSAGE, GetMsgProc, nullptr, threadId);
+        }
+        g_hook_ref_count++;
+    } else {
+        it->second.frameMode = FrameMode::CustomFrame;
+        it->second.captionHeight = captionHeight > 0 ? captionHeight : DEFAULT_CAPTION_HEIGHT;
+    }
+
+    // Extend frame into client area with -1 margins for proper DWM rendering
+    MARGINS margins = {-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+    // Force frame change
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
+// Set caption button zones for hit testing
+extern "C" __declspec(dllexport) void SetCaptionButtonZones(
+    HWND hwnd,
+    int minLeft, int minTop, int minRight, int minBottom,
+    int maxLeft, int maxTop, int maxRight, int maxBottom,
+    int closeLeft, int closeTop, int closeRight, int closeBottom
+) {
+    auto it = g_window_states.find(hwnd);
+    if (it == g_window_states.end()) return;
+
+    WindowState& state = it->second;
+
+    state.minimizeButton = { minLeft, minTop, minRight, minBottom };
+    state.maximizeButton = { maxLeft, maxTop, maxRight, maxBottom };
+    state.closeButton = { closeLeft, closeTop, closeRight, closeBottom };
+    state.hasCaptionButtons = true;
+}
+
+// Clear caption button zones
+extern "C" __declspec(dllexport) void ClearCaptionButtonZones(HWND hwnd) {
+    auto it = g_window_states.find(hwnd);
+    if (it == g_window_states.end()) return;
+
+    it->second.hasCaptionButtons = false;
+}
+
+// Set caption height
+extern "C" __declspec(dllexport) void SetCaptionHeight(HWND hwnd, int height) {
+    auto it = g_window_states.find(hwnd);
+    if (it == g_window_states.end()) return;
+
+    it->second.captionHeight = height > 0 ? height : DEFAULT_CAPTION_HEIGHT;
+}
+
+// Legacy: Enable or disable custom frame (hidden mode)
 extern "C" __declspec(dllexport) void EnableCustomFrame(HWND hwnd, bool enable) {
     auto it = g_window_states.find(hwnd);
 
     if (enable) {
-        // Check if this window is already registered
         if (it == g_window_states.end()) {
-            // New window - register it
-            WindowState state;
-            state.customFrameEnabled = true;
+            WindowState state = {};
+            state.frameMode = FrameMode::Hidden;
+            state.captionHeight = 0;
+            state.hasCaptionButtons = false;
 
-            // Replace the window procedure with ours
             state.originalWndProc = reinterpret_cast<WNDPROC>(
-                SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(FramelessWndProc))
+                SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(CustomFrameWndProc))
             );
 
             g_window_states[hwnd] = state;
 
-            // Install GetMessage hook if not already installed (shared across all windows)
             if (g_getmsg_hook == nullptr) {
                 DWORD threadId = GetWindowThreadProcessId(hwnd, nullptr);
-                g_getmsg_hook = SetWindowsHookEx(WH_GETMESSAGE, GetMsgProc,
-                                                  nullptr, threadId);
+                g_getmsg_hook = SetWindowsHookEx(WH_GETMESSAGE, GetMsgProc, nullptr, threadId);
             }
             g_hook_ref_count++;
 
-            // Extend frame into client area with 1 pixel on top
             MARGINS margins = {0, 0, 1, 0};
             DwmExtendFrameIntoClientArea(hwnd, &margins);
         } else {
-            // Window already registered, just enable custom frame
-            it->second.customFrameEnabled = true;
+            it->second.frameMode = FrameMode::Hidden;
 
-            // Extend frame into client area with 1 pixel on top
             MARGINS margins = {0, 0, 1, 0};
             DwmExtendFrameIntoClientArea(hwnd, &margins);
         }
     } else {
-        // Disable custom frame for this window
         if (it != g_window_states.end()) {
-            it->second.customFrameEnabled = false;
+            it->second.frameMode = FrameMode::Normal;
 
-            // Reset frame extension
             MARGINS margins = {0, 0, 0, 0};
             DwmExtendFrameIntoClientArea(hwnd, &margins);
         }
     }
 
-    // Force Windows to recalculate the non-client area
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
 
-// Check if custom frame is currently enabled for a specific window
+// Disable custom frame and restore normal window
+extern "C" __declspec(dllexport) void DisableCustomFrame(HWND hwnd) {
+    auto it = g_window_states.find(hwnd);
+    if (it != g_window_states.end()) {
+        it->second.frameMode = FrameMode::Normal;
+
+        MARGINS margins = {0, 0, 0, 0};
+        DwmExtendFrameIntoClientArea(hwnd, &margins);
+    }
+
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
+// Check current frame mode
+extern "C" __declspec(dllexport) int GetFrameMode(HWND hwnd) {
+    auto it = g_window_states.find(hwnd);
+    if (it != g_window_states.end()) {
+        return static_cast<int>(it->second.frameMode);
+    }
+    return static_cast<int>(FrameMode::Normal);
+}
+
+// Check if custom frame is currently enabled (legacy)
 extern "C" __declspec(dllexport) bool IsCustomFrameEnabled(HWND hwnd) {
     auto it = g_window_states.find(hwnd);
     if (it != g_window_states.end()) {
-        return it->second.customFrameEnabled;
+        return it->second.frameMode != FrameMode::Normal;
     }
     return false;
 }
 
-// Restore the original window procedure (call when window is closed or plugin is unloaded)
+// Restore the original window procedure
 extern "C" __declspec(dllexport) void RestoreWindowProc(HWND hwnd) {
     auto it = g_window_states.find(hwnd);
     if (it != g_window_states.end()) {
-        // Restore window procedure
         if (it->second.originalWndProc != nullptr) {
             SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(it->second.originalWndProc));
         }
 
-        // Remove from map
         g_window_states.erase(it);
 
-        // Decrement hook ref count and remove hook if no more windows
         g_hook_ref_count--;
         if (g_hook_ref_count <= 0 && g_getmsg_hook != nullptr) {
             UnhookWindowsHookEx(g_getmsg_hook);
@@ -429,10 +724,9 @@ extern "C" __declspec(dllexport) void RestoreWindowProc(HWND hwnd) {
     }
 }
 
-// Start window resize operation from a specific edge
-// edge values: 0=left, 1=right, 2=top, 3=bottom, 4=topLeft, 5=topRight, 6=bottomLeft, 7=bottomRight
+// Start window resize operation
 extern "C" __declspec(dllexport) void StartResize(HWND hwnd, int edge) {
-    if (IsZoomed(hwnd)) return; // Can't resize when maximized
+    if (IsZoomed(hwnd)) return;
 
     WPARAM resizeType;
     switch (edge) {
@@ -460,4 +754,9 @@ extern "C" __declspec(dllexport) void StartDrag(HWND hwnd) {
 // Get the resize border width
 extern "C" __declspec(dllexport) int GetResizeBorderWidth() {
     return RESIZE_BORDER_WIDTH;
+}
+
+// Check if Windows 11
+extern "C" __declspec(dllexport) bool IsWindows11() {
+    return IsWindows11OrGreater();
 }

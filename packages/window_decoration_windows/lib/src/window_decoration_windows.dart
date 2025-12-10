@@ -275,7 +275,7 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
   }
 
   @override
-  Future<void> setTitleBarStyle(TitleBarStyle style) async {
+  Future<void> setTitleBarStyle(TitleBarStyle style, {int captionHeight = 32}) async {
     _checkInitialized();
 
     switch (style) {
@@ -284,7 +284,7 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
         _restoreStandardTitleBar();
 
       case TitleBarStyle.hidden:
-        // Hide title bar by removing caption and borders
+        // Hide title bar by removing caption and borders (legacy mode)
         _hideWindowFrame();
 
       case TitleBarStyle.transparent:
@@ -294,6 +294,10 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
       case TitleBarStyle.unified:
         // Create unified look with custom drawn title bar
         _createUnifiedTitleBar();
+
+      case TitleBarStyle.customFrame:
+        // Windows 11 File Explorer style: custom frame with decorations
+        _createCustomFrame(captionHeight);
     }
 
     // Force window to redraw with new style
@@ -547,6 +551,51 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
     }
   }
 
+  void _createCustomFrame(int captionHeight) {
+    // Windows 11 File Explorer style: removes title bar but keeps decorations
+    // This creates a window with:
+    // - Shadow and rounded corners (Windows 11)
+    // - 1px visible border
+    // - No title bar (app draws its own)
+    // - Proper resize borders
+    // - Snap layouts support
+
+    // Ensure we have the required window styles
+    final currentStyle = Win32Bindings.getWindowLongPtr(
+      _hwnd,
+      Win32Bindings.GWL_STYLE,
+    );
+
+    // We need WS_THICKFRAME for resize, WS_CAPTION triggers DWM frame drawing
+    // We keep WS_CAPTION but the native code will handle WM_NCCALCSIZE to remove the actual title bar
+    final newStyle =
+        (currentStyle & ~Win32Bindings.WS_POPUP) |
+        Win32Bindings.WS_CAPTION |
+        Win32Bindings.WS_THICKFRAME |
+        Win32Bindings.WS_SYSMENU |
+        Win32Bindings.WS_MINIMIZEBOX |
+        Win32Bindings.WS_MAXIMIZEBOX;
+
+    Win32Bindings.setWindowLongPtr(_hwnd, Win32Bindings.GWL_STYLE, newStyle);
+
+    // Enable custom frame mode with the specified caption height
+    Win32Bindings.enableCustomFrameMode(_hwnd, captionHeight);
+
+    // Enable rounded corners (Windows 11)
+    final corners = calloc<Uint32>();
+    try {
+      corners.value = Win32Bindings.DWMWCP_ROUND;
+      Win32Bindings.dwmSetWindowAttribute(
+        _hwnd,
+        Win32Bindings.DWMWA_WINDOW_CORNER_PREFERENCE,
+        corners.cast(),
+        sizeOf<Uint32>(),
+      );
+    } finally {
+      calloc.free(corners);
+    }
+  }
+
   // ==========================================================================
   // Windows-Specific Features
   // ==========================================================================
@@ -637,6 +686,101 @@ class WindowDecorationWindows extends WindowDecorationPlatform {
       Win32Bindings.GWL_EXSTYLE,
     );
     return (exStyle & Win32Bindings.WS_EX_TOPMOST) != 0;
+  }
+
+  /// Check if running on Windows 11 or later
+  bool isWindows11() {
+    return Win32Bindings.isWindows11();
+  }
+
+  // ==========================================================================
+  // Custom Frame APIs (for TitleBarStyle.customFrame)
+  // ==========================================================================
+
+  /// Set the caption button zones for hit testing.
+  ///
+  /// Call this after setting [TitleBarStyle.customFrame] to define where your
+  /// custom caption buttons are located. This enables:
+  /// - Windows 11 snap layouts when hovering over the maximize button
+  /// - Proper hit testing so buttons don't trigger window drag
+  /// - Native button behaviors (close, maximize, minimize)
+  ///
+  /// All coordinates are in client area pixels (logical pixels, not physical).
+  /// The zones should match your Flutter button widgets' positions.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Assuming buttons are 46x32 pixels each, positioned at the right
+  /// final bounds = await windowDecoration.getBounds();
+  /// final buttonWidth = 46;
+  /// final buttonHeight = 32;
+  ///
+  /// windowDecoration.setCaptionButtonZones(
+  ///   minimize: Rect.fromLTWH(bounds.width - 3 * buttonWidth, 0, buttonWidth, buttonHeight),
+  ///   maximize: Rect.fromLTWH(bounds.width - 2 * buttonWidth, 0, buttonWidth, buttonHeight),
+  ///   close: Rect.fromLTWH(bounds.width - buttonWidth, 0, buttonWidth, buttonHeight),
+  /// );
+  /// ```
+  Future<void> setCaptionButtonZones({
+    required Rect minimize,
+    required Rect maximize,
+    required Rect close,
+  }) async {
+    _checkInitialized();
+
+    Win32Bindings.setCaptionButtonZones(
+      _hwnd,
+      minLeft: minimize.left.toInt(),
+      minTop: minimize.top.toInt(),
+      minRight: minimize.right.toInt(),
+      minBottom: minimize.bottom.toInt(),
+      maxLeft: maximize.left.toInt(),
+      maxTop: maximize.top.toInt(),
+      maxRight: maximize.right.toInt(),
+      maxBottom: maximize.bottom.toInt(),
+      closeLeft: close.left.toInt(),
+      closeTop: close.top.toInt(),
+      closeRight: close.right.toInt(),
+      closeBottom: close.bottom.toInt(),
+    );
+  }
+
+  /// Clear the caption button zones.
+  ///
+  /// After calling this, the entire caption area (defined by caption height)
+  /// will be draggable. Use this if you want a simple draggable title bar
+  /// without specific button hit testing.
+  Future<void> clearCaptionButtonZones() async {
+    _checkInitialized();
+    Win32Bindings.clearCaptionButtonZones(_hwnd);
+  }
+
+  /// Set the caption height (the draggable area at the top of the window).
+  ///
+  /// This defines how tall the draggable caption area is. The value is in
+  /// logical pixels and will be scaled for DPI automatically.
+  ///
+  /// Default is 32 pixels if not specified.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Set caption height to match your title bar widget height
+  /// windowDecoration.setCaptionHeight(48);
+  /// ```
+  Future<void> setCaptionHeight(int height) async {
+    _checkInitialized();
+    Win32Bindings.setCaptionHeight(_hwnd, height);
+  }
+
+  /// Get the current frame mode.
+  ///
+  /// Returns:
+  /// - 0: Normal (standard Windows title bar)
+  /// - 1: Hidden (legacy borderless mode)
+  /// - 2: CustomFrame (Windows 11 File Explorer style)
+  int getFrameMode() {
+    _checkInitialized();
+    return Win32Bindings.getFrameMode(_hwnd);
   }
 
   // ==========================================================================

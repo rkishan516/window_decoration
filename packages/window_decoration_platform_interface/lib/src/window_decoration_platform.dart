@@ -108,7 +108,11 @@ abstract class WindowDecorationPlatform extends PlatformInterface {
   Future<void> setFullScreen({required bool fullScreen});
 
   /// Sets the title bar style.
-  Future<void> setTitleBarStyle(TitleBarStyle style);
+  ///
+  /// [captionHeight] is only used when [style] is [TitleBarStyle.customFrame].
+  /// It defines the height of the draggable caption area in logical pixels.
+  /// Default is 32 pixels.
+  Future<void> setTitleBarStyle(TitleBarStyle style, {int captionHeight = 32});
 
   /// Sets whether the window is visible.
   ///

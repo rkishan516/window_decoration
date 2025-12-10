@@ -166,7 +166,7 @@ class WindowDecorationLinux extends WindowDecorationPlatform {
   }
 
   @override
-  Future<void> setTitleBarStyle(TitleBarStyle style) async {
+  Future<void> setTitleBarStyle(TitleBarStyle style, {int captionHeight = 32}) async {
     _checkInitialized();
 
     switch (style) {
@@ -181,6 +181,10 @@ class WindowDecorationLinux extends WindowDecorationPlatform {
       case TitleBarStyle.unified:
         // Not applicable to Linux GTK windows
         GtkBindings.windowSetDecorated(_gtkWindow, decorated: true);
+      case TitleBarStyle.customFrame:
+        // On Linux, customFrame behaves like hidden (client-side decorations)
+        // The captionHeight parameter is not used on Linux
+        GtkBindings.windowSetDecorated(_gtkWindow, decorated: false);
     }
   }
 

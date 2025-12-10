@@ -62,6 +62,10 @@ class _DemoHomePageState extends State<DemoHomePage> {
   Color backgroundColor = Colors.black;
   WindowBounds? currentBounds;
 
+  // Custom title bar height
+  static const double kTitleBarHeight = 48.0;
+  static const double kButtonWidth = 46.0;
+
   @override
   void initState() {
     super.initState();
@@ -163,7 +167,16 @@ class _DemoHomePageState extends State<DemoHomePage> {
 
   Future<void> _setTitleBarStyle(TitleBarStyle style) async {
     try {
-      await service.setTitleBarStyle(style);
+      // For customFrame style, use custom caption height
+      final captionHeight =
+          style == TitleBarStyle.customFrame ? kTitleBarHeight.toInt() : 32;
+      await service.setTitleBarStyle(style, captionHeight: captionHeight);
+
+      // On Windows, set up caption button zones for snap layout support
+      if (Platform.isWindows && style == TitleBarStyle.customFrame) {
+        await _updateCaptionButtonZones();
+      }
+
       if (!mounted) return;
       setState(() {
         titleBarStyle = style;
@@ -172,6 +185,39 @@ class _DemoHomePageState extends State<DemoHomePage> {
     } catch (e) {
       if (!mounted) return;
       _setStatus('Error setting title bar style: $e');
+    }
+  }
+
+  Future<void> _updateCaptionButtonZones() async {
+    if (!Platform.isWindows) return;
+
+    try {
+      final bounds = await service.getBounds();
+      final windowWidth = bounds.width;
+
+      // Define button zones (right-aligned: minimize, maximize, close)
+      await service.windows.setCaptionButtonZones(
+        minimize: Rect.fromLTWH(
+          windowWidth - 3 * kButtonWidth,
+          0,
+          kButtonWidth,
+          kTitleBarHeight,
+        ),
+        maximize: Rect.fromLTWH(
+          windowWidth - 2 * kButtonWidth,
+          0,
+          kButtonWidth,
+          kTitleBarHeight,
+        ),
+        close: Rect.fromLTWH(
+          windowWidth - kButtonWidth,
+          0,
+          kButtonWidth,
+          kTitleBarHeight,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Error updating caption button zones: $e');
     }
   }
 
@@ -230,189 +276,370 @@ class _DemoHomePageState extends State<DemoHomePage> {
     }
   }
 
+  void _minimizeWindow() {
+    // In a real app, you'd implement minimize via platform channel
+    _setStatus('Minimize clicked');
+  }
+
+  void _maximizeWindow() {
+    // In a real app, you'd implement maximize via platform channel
+    _setStatus('Maximize clicked (try hovering for snap layouts on Win11)');
+  }
+
+  void _closeWindow() {
+    // In a real app, you'd close the window
+    _setStatus('Close clicked');
+  }
+
   @override
   Widget build(BuildContext context) {
+    // When using customFrame style, we need to show our own title bar
+    final showCustomTitleBar =
+        titleBarStyle == TitleBarStyle.customFrame ||
+        titleBarStyle == TitleBarStyle.hidden;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Window Decoration Interactive Demo'),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _resetDefaults,
-            tooltip: 'Reset to defaults',
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Status bar
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade900.withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
+      appBar: showCustomTitleBar ? null : _buildDefaultAppBar(),
+      body: Column(
+        children: [
+          // Custom title bar when using customFrame or hidden style
+          if (showCustomTitleBar) _buildCustomTitleBar(),
+
+          // Main content
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.info_outline, size: 20),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      statusMessage,
-                      style: const TextStyle(fontSize: 14),
+                  // Status bar
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade900.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.info_outline, size: 20),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            statusMessage,
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
+
+                  const SizedBox(height: 24),
+
+                  // Window Bounds Info
+                  if (currentBounds != null) ...[
+                    _buildSection('Current Window Bounds', [
+                      Text(
+                        'Position: (${currentBounds!.x.toInt()}, ${currentBounds!.y.toInt()})\n'
+                        'Size: ${currentBounds!.width.toInt()} x ${currentBounds!.height.toInt()}',
+                        style: const TextStyle(fontFamily: 'monospace'),
+                      ),
+                    ]),
+                    const SizedBox(height: 24),
+                  ],
+
+                  // Window Positioning
+                  _buildSection('Window Positioning', [
+                    ElevatedButton.icon(
+                      onPressed: _centerWindow,
+                      icon: const Icon(Icons.center_focus_strong),
+                      label: const Text('Center Window'),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      onPressed: _loadCurrentBounds,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Refresh Bounds'),
+                    ),
+                  ]),
+
+                  const SizedBox(height: 24),
+
+                  // Window Appearance
+                  _buildSection('Window Appearance', [
+                    const Text(
+                      'Opacity:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Slider(
+                            value: opacity,
+                            min: 0.3,
+                            max: 1.0,
+                            divisions: 14,
+                            label: opacity.toStringAsFixed(2),
+                            onChanged: _setOpacity,
+                          ),
+                        ),
+                        SizedBox(
+                          width: 60,
+                          child: Text(
+                            opacity.toStringAsFixed(2),
+                            style: const TextStyle(fontFamily: 'monospace'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Background Color:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _colorButton(Colors.black, 'Black'),
+                        _colorButton(Colors.white, 'White'),
+                        _colorButton(Colors.red.shade900, 'Red'),
+                        _colorButton(Colors.blue.shade900, 'Blue'),
+                        _colorButton(Colors.green.shade900, 'Green'),
+                        _colorButton(Colors.purple.shade900, 'Purple'),
+                      ],
+                    ),
+                  ]),
+
+                  const SizedBox(height: 24),
+
+                  // Window Behavior
+                  _buildSection('Window Behavior', [
+                    SwitchListTile(
+                      title: const Text('Always on Top'),
+                      subtitle: const Text('Keep window above all others'),
+                      value: alwaysOnTop,
+                      onChanged: (_) => _toggleAlwaysOnTop(),
+                    ),
+                    SwitchListTile(
+                      title: const Text('Skip Taskbar'),
+                      subtitle: const Text('Hide from dock/taskbar'),
+                      value: skipTaskbar,
+                      onChanged: (_) => _toggleSkipTaskbar(),
+                    ),
+                    SwitchListTile(
+                      title: const Text('Fullscreen'),
+                      subtitle: const Text('Toggle fullscreen mode'),
+                      value: fullScreen,
+                      onChanged: (_) => _toggleFullScreen(),
+                    ),
+                  ]),
+
+                  const SizedBox(height: 24),
+
+                  // Title Bar Styles
+                  _buildSection('Title Bar Style', [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _titleBarButton(TitleBarStyle.normal, 'Normal'),
+                        _titleBarButton(TitleBarStyle.hidden, 'Hidden'),
+                        _titleBarButton(
+                          TitleBarStyle.transparent,
+                          'Transparent',
+                        ),
+                        _titleBarButton(TitleBarStyle.unified, 'Unified'),
+                        _titleBarButton(
+                          TitleBarStyle.customFrame,
+                          'Custom Frame (Win11)',
+                        ),
+                      ],
+                    ),
+                    if (titleBarStyle == TitleBarStyle.customFrame) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade900.withValues(alpha: 0.3),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: Colors.green.shade700,
+                            width: 1,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.check_circle,
+                                  color: Colors.green.shade400,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Windows 11 File Explorer Style Active',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              '• Window has shadow, rounded corners & border\n'
+                              '• Custom title bar with drag area\n'
+                              '• Hover over maximize button for snap layouts\n'
+                              '• Resize from all edges and corners\n'
+                              '• Double-click title bar to maximize',
+                              style: TextStyle(fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (titleBarStyle == TitleBarStyle.hidden) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade900.withValues(alpha: 0.3),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'Hidden mode (legacy borderless):\n'
+                          '• No window decorations\n'
+                          '• Drag the custom title bar to move\n'
+                          '• Use custom buttons to control window',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ]),
+
+                  const SizedBox(height: 24),
+
+                  // macOS-Specific Features
+                  if (Platform.isMacOS) ...[
+                    _buildSection('macOS Vibrancy Effects', [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _vibrancyButton(
+                            NSVisualEffectMaterial.sidebar,
+                            'Sidebar',
+                          ),
+                          _vibrancyButton(
+                            NSVisualEffectMaterial.titlebar,
+                            'Titlebar',
+                          ),
+                          _vibrancyButton(NSVisualEffectMaterial.menu, 'Menu'),
+                          _vibrancyButton(
+                            NSVisualEffectMaterial.popover,
+                            'Popover',
+                          ),
+                          _vibrancyButton(
+                            NSVisualEffectMaterial.windowBackground,
+                            'Window BG',
+                          ),
+                        ],
+                      ),
+                    ]),
+                    const SizedBox(height: 24),
+                  ],
                 ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
 
-            const SizedBox(height: 24),
+  PreferredSizeWidget _buildDefaultAppBar() {
+    return AppBar(
+      title: const Text('Window Decoration Interactive Demo'),
+      centerTitle: true,
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          onPressed: _resetDefaults,
+          tooltip: 'Reset to defaults',
+        ),
+      ],
+    );
+  }
 
-            // Window Bounds Info
-            if (currentBounds != null) ...[
-              _buildSection('Current Window Bounds', [
-                Text(
-                  'Position: (${currentBounds!.x.toInt()}, ${currentBounds!.y.toInt()})\n'
-                  'Size: ${currentBounds!.width.toInt()} × ${currentBounds!.height.toInt()}',
-                  style: const TextStyle(fontFamily: 'monospace'),
+  Widget _buildCustomTitleBar() {
+    return GestureDetector(
+      onPanStart: (_) {
+        // Start dragging the window
+        service.windows.startDrag();
+      },
+      onDoubleTap: _maximizeWindow,
+      child: Container(
+        height: kTitleBarHeight,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade900,
+          border: Border(
+            bottom: BorderSide(
+              color: Colors.grey.shade800,
+              width: 1,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            // App icon and title
+            const SizedBox(width: 16),
+            Icon(
+              Icons.window,
+              color: Colors.blue.shade400,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Window Decoration Demo - Custom Title Bar',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
                 ),
-              ]),
-              const SizedBox(height: 24),
-            ],
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
 
-            // Window Positioning
-            _buildSection('Window Positioning', [
-              ElevatedButton.icon(
-                onPressed: _centerWindow,
-                icon: const Icon(Icons.center_focus_strong),
-                label: const Text('Center Window'),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: _loadCurrentBounds,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Refresh Bounds'),
-              ),
-            ]),
+            // Reset button
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 18),
+              onPressed: _resetDefaults,
+              tooltip: 'Reset to defaults',
+              splashRadius: 18,
+            ),
 
-            const SizedBox(height: 24),
+            const SizedBox(width: 8),
 
-            // Window Appearance
-            _buildSection('Window Appearance', [
-              const Text(
-                'Opacity:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: Slider(
-                      value: opacity,
-                      min: 0.3,
-                      max: 1.0,
-                      divisions: 14,
-                      label: opacity.toStringAsFixed(2),
-                      onChanged: _setOpacity,
-                    ),
-                  ),
-                  SizedBox(
-                    width: 60,
-                    child: Text(
-                      opacity.toStringAsFixed(2),
-                      style: const TextStyle(fontFamily: 'monospace'),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Background Color:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _colorButton(Colors.black, 'Black'),
-                  _colorButton(Colors.white, 'White'),
-                  _colorButton(Colors.red.shade900, 'Red'),
-                  _colorButton(Colors.blue.shade900, 'Blue'),
-                  _colorButton(Colors.green.shade900, 'Green'),
-                  _colorButton(Colors.purple.shade900, 'Purple'),
-                ],
-              ),
-            ]),
-
-            const SizedBox(height: 24),
-
-            // Window Behavior
-            _buildSection('Window Behavior', [
-              SwitchListTile(
-                title: const Text('Always on Top'),
-                subtitle: const Text('Keep window above all others'),
-                value: alwaysOnTop,
-                onChanged: (_) => _toggleAlwaysOnTop(),
-              ),
-              SwitchListTile(
-                title: const Text('Skip Taskbar'),
-                subtitle: const Text('Hide from dock/taskbar'),
-                value: skipTaskbar,
-                onChanged: (_) => _toggleSkipTaskbar(),
-              ),
-              SwitchListTile(
-                title: const Text('Fullscreen'),
-                subtitle: const Text('Toggle fullscreen mode'),
-                value: fullScreen,
-                onChanged: (_) => _toggleFullScreen(),
-              ),
-            ]),
-
-            const SizedBox(height: 24),
-
-            // Title Bar Styles
-            _buildSection('Title Bar Style', [
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _titleBarButton(TitleBarStyle.normal, 'Normal'),
-                  _titleBarButton(TitleBarStyle.hidden, 'Hidden'),
-                  _titleBarButton(TitleBarStyle.transparent, 'Transparent'),
-                  _titleBarButton(TitleBarStyle.unified, 'Unified'),
-                ],
-              ),
-            ]),
-
-            const SizedBox(height: 24),
-
-            // macOS-Specific Features
-            if (Platform.isMacOS) ...[
-              _buildSection('macOS Vibrancy Effects', [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _vibrancyButton(NSVisualEffectMaterial.sidebar, 'Sidebar'),
-                    _vibrancyButton(
-                      NSVisualEffectMaterial.titlebar,
-                      'Titlebar',
-                    ),
-                    _vibrancyButton(NSVisualEffectMaterial.menu, 'Menu'),
-                    _vibrancyButton(NSVisualEffectMaterial.popover, 'Popover'),
-                    _vibrancyButton(
-                      NSVisualEffectMaterial.windowBackground,
-                      'Window BG',
-                    ),
-                  ],
-                ),
-              ]),
-              const SizedBox(height: 24),
-            ],
+            // Window control buttons
+            _WindowButton(
+              icon: Icons.remove,
+              onPressed: _minimizeWindow,
+              tooltip: 'Minimize',
+            ),
+            _WindowButton(
+              icon: Icons.crop_square,
+              onPressed: _maximizeWindow,
+              tooltip: 'Maximize (hover for snap layouts)',
+            ),
+            _WindowButton(
+              icon: Icons.close,
+              onPressed: _closeWindow,
+              tooltip: 'Close',
+              isClose: true,
+            ),
           ],
         ),
       ),
@@ -439,9 +666,8 @@ class _DemoHomePageState extends State<DemoHomePage> {
       onPressed: () => _setBackgroundColor(color),
       style: ElevatedButton.styleFrom(
         backgroundColor: color,
-        foregroundColor: color.computeLuminance() > 0.5
-            ? Colors.black
-            : Colors.white,
+        foregroundColor:
+            color.computeLuminance() > 0.5 ? Colors.black : Colors.white,
         side: isSelected
             ? const BorderSide(color: Colors.white, width: 3)
             : null,
@@ -465,6 +691,54 @@ class _DemoHomePageState extends State<DemoHomePage> {
     return ElevatedButton(
       onPressed: () => _setVibrancy(material),
       child: Text(label),
+    );
+  }
+}
+
+/// A window control button (minimize, maximize, close)
+class _WindowButton extends StatefulWidget {
+  const _WindowButton({
+    required this.icon,
+    required this.onPressed,
+    required this.tooltip,
+    this.isClose = false,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressed;
+  final String tooltip;
+  final bool isClose;
+
+  @override
+  State<_WindowButton> createState() => _WindowButtonState();
+}
+
+class _WindowButtonState extends State<_WindowButton> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: Tooltip(
+        message: widget.tooltip,
+        child: GestureDetector(
+          onTap: widget.onPressed,
+          child: Container(
+            width: _DemoHomePageState.kButtonWidth,
+            height: _DemoHomePageState.kTitleBarHeight,
+            color: _isHovered
+                ? (widget.isClose ? Colors.red : Colors.white.withValues(alpha: 0.1))
+                : Colors.transparent,
+            child: Icon(
+              widget.icon,
+              size: 16,
+              color: _isHovered && widget.isClose ? Colors.white : Colors.grey.shade400,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

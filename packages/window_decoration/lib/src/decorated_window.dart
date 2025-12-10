@@ -99,7 +99,10 @@ class _DecoratedWindowState extends State<DecoratedWindow> {
       }
 
       // Apply title bar style
-      await _service.setTitleBarStyle(config.titleBarStyle);
+      await _service.setTitleBarStyle(
+        config.titleBarStyle,
+        captionHeight: config.captionHeight,
+      );
 
       // Apply visibility
       await _service.setVisible(visible: config.visible);

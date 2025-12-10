@@ -194,7 +194,7 @@ class WindowDecorationMacOS extends WindowDecorationPlatform {
   }
 
   @override
-  Future<void> setTitleBarStyle(TitleBarStyle style) async {
+  Future<void> setTitleBarStyle(TitleBarStyle style, {int captionHeight = 32}) async {
     _checkInitialized();
 
     switch (style) {
@@ -206,6 +206,10 @@ class WindowDecorationMacOS extends WindowDecorationPlatform {
         await _setTitleBarTransparent();
       case TitleBarStyle.unified:
         await _setUnifiedTitleBar();
+      case TitleBarStyle.customFrame:
+        // On macOS, customFrame behaves like transparent (full size content view)
+        // The captionHeight parameter is not used on macOS - the app draws its own title bar
+        await _setTitleBarTransparent();
     }
   }
 

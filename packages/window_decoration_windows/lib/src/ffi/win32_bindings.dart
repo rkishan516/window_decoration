@@ -324,7 +324,7 @@ class Win32Bindings {
   // Custom Frame Functions (from our native plugin)
   // ==========================================================================
 
-  /// Enable or disable custom frameless window handling
+  /// Enable or disable custom frameless window handling (legacy hidden mode)
   /// This handles WM_NCCALCSIZE to remove the black bar when title bar is hidden
   static void enableCustomFrame(int hwnd, bool enable) {
     if (_pluginLib == null) {
@@ -343,6 +343,134 @@ class Win32Bindings {
     enableCustomFrameFunc(hwnd, enable);
   }
 
+  /// Enable Windows 11 File Explorer style custom frame mode
+  /// This removes the title bar while keeping window decorations (shadow, border, rounded corners)
+  /// [captionHeight] is the height of your custom title bar in logical pixels (will be scaled for DPI)
+  static void enableCustomFrameMode(int hwnd, int captionHeight) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError(
+          'Native plugin not loaded. Call Win32Bindings.initializePlugin() first '
+          'or ensure window_decoration_windows_plugin.dll is in the app directory.',
+        );
+      }
+    }
+
+    final enableFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd, Int32 captionHeight),
+        void Function(int hwnd, int captionHeight)>('EnableCustomFrameMode');
+
+    enableFunc(hwnd, captionHeight);
+  }
+
+  /// Disable custom frame mode and restore normal window
+  static void disableCustomFrame(int hwnd) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError('Native plugin not loaded.');
+      }
+    }
+
+    final disableFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd),
+        void Function(int hwnd)>('DisableCustomFrame');
+
+    disableFunc(hwnd);
+  }
+
+  /// Set the caption button zones for hit testing
+  /// All coordinates are in client area pixels (not scaled - pass actual pixel values)
+  /// This enables Windows 11 snap layouts when hovering over the maximize button
+  static void setCaptionButtonZones(
+    int hwnd, {
+    required int minLeft,
+    required int minTop,
+    required int minRight,
+    required int minBottom,
+    required int maxLeft,
+    required int maxTop,
+    required int maxRight,
+    required int maxBottom,
+    required int closeLeft,
+    required int closeTop,
+    required int closeRight,
+    required int closeBottom,
+  }) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError('Native plugin not loaded.');
+      }
+    }
+
+    final setZonesFunc = _pluginLib!.lookupFunction<
+        Void Function(
+          IntPtr hwnd,
+          Int32 minLeft, Int32 minTop, Int32 minRight, Int32 minBottom,
+          Int32 maxLeft, Int32 maxTop, Int32 maxRight, Int32 maxBottom,
+          Int32 closeLeft, Int32 closeTop, Int32 closeRight, Int32 closeBottom,
+        ),
+        void Function(
+          int hwnd,
+          int minLeft, int minTop, int minRight, int minBottom,
+          int maxLeft, int maxTop, int maxRight, int maxBottom,
+          int closeLeft, int closeTop, int closeRight, int closeBottom,
+        )>('SetCaptionButtonZones');
+
+    setZonesFunc(
+      hwnd,
+      minLeft, minTop, minRight, minBottom,
+      maxLeft, maxTop, maxRight, maxBottom,
+      closeLeft, closeTop, closeRight, closeBottom,
+    );
+  }
+
+  /// Clear caption button zones (the entire caption area will be draggable)
+  static void clearCaptionButtonZones(int hwnd) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError('Native plugin not loaded.');
+      }
+    }
+
+    final clearFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd),
+        void Function(int hwnd)>('ClearCaptionButtonZones');
+
+    clearFunc(hwnd);
+  }
+
+  /// Set the caption height (the draggable area at the top of the window)
+  /// [height] is in logical pixels (will be scaled for DPI)
+  static void setCaptionHeight(int hwnd, int height) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        throw StateError('Native plugin not loaded.');
+      }
+    }
+
+    final setHeightFunc = _pluginLib!.lookupFunction<
+        Void Function(IntPtr hwnd, Int32 height),
+        void Function(int hwnd, int height)>('SetCaptionHeight');
+
+    setHeightFunc(hwnd, height);
+  }
+
+  /// Get current frame mode
+  /// Returns: 0 = Normal, 1 = Hidden (legacy), 2 = CustomFrame (Windows 11 style)
+  static int getFrameMode(int hwnd) {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        return 0;
+      }
+    }
+
+    final getModeFunc = _pluginLib!.lookupFunction<
+        Int32 Function(IntPtr hwnd),
+        int Function(int hwnd)>('GetFrameMode');
+
+    return getModeFunc(hwnd);
+  }
+
   /// Check if custom frame handling is currently enabled for a window
   static bool isCustomFrameEnabled(int hwnd) {
     if (_pluginLib == null) {
@@ -354,6 +482,21 @@ class Win32Bindings {
         bool Function(int hwnd)>('IsCustomFrameEnabled');
 
     return isEnabledFunc(hwnd);
+  }
+
+  /// Check if running on Windows 11
+  static bool isWindows11() {
+    if (_pluginLib == null) {
+      if (!tryAutoInitializePlugin()) {
+        return false;
+      }
+    }
+
+    final isWin11Func = _pluginLib!.lookupFunction<
+        Bool Function(),
+        bool Function()>('IsWindows11');
+
+    return isWin11Func();
   }
 
   /// Start window resize from a specific edge

@@ -133,8 +133,12 @@ class WindowDecorationService {
       _platform.setFullScreen(fullScreen: fullScreen);
 
   /// Sets the title bar style
-  Future<void> setTitleBarStyle(TitleBarStyle style) =>
-      _platform.setTitleBarStyle(style);
+  ///
+  /// [captionHeight] is only used on Windows when [style] is [TitleBarStyle.customFrame].
+  /// It defines the height of the draggable caption area in logical pixels.
+  /// Default is 32 pixels.
+  Future<void> setTitleBarStyle(TitleBarStyle style, {int captionHeight = 32}) =>
+      _platform.setTitleBarStyle(style, captionHeight: captionHeight);
 
   /// Sets whether the window is visible
   ///

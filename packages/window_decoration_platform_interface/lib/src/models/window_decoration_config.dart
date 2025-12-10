@@ -15,6 +15,7 @@ class WindowDecorationConfig {
     this.backgroundColor,
     this.opacity,
     this.titleBarStyle = TitleBarStyle.normal,
+    this.captionHeight = 32,
     this.effects = const [],
   });
 
@@ -42,6 +43,12 @@ class WindowDecorationConfig {
   /// Title bar appearance style
   final TitleBarStyle titleBarStyle;
 
+  /// Height of the draggable caption area in logical pixels.
+  ///
+  /// Only used on Windows when [titleBarStyle] is [TitleBarStyle.customFrame].
+  /// Default is 32 pixels.
+  final int captionHeight;
+
   /// Visual effects to apply to the window
   final List<WindowEffect> effects;
 
@@ -57,6 +64,7 @@ class WindowDecorationConfig {
     Color? backgroundColor,
     double? opacity,
     TitleBarStyle? titleBarStyle,
+    int? captionHeight,
     List<WindowEffect>? effects,
   }) => WindowDecorationConfig(
     centered: centered ?? this.centered,
@@ -67,6 +75,7 @@ class WindowDecorationConfig {
     backgroundColor: backgroundColor ?? this.backgroundColor,
     opacity: opacity ?? this.opacity,
     titleBarStyle: titleBarStyle ?? this.titleBarStyle,
+    captionHeight: captionHeight ?? this.captionHeight,
     effects: effects ?? this.effects,
   );
 }

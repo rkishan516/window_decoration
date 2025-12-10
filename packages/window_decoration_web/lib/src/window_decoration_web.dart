@@ -99,7 +99,7 @@ class WindowDecorationWeb extends WindowDecorationPlatform {
   }
 
   @override
-  Future<void> setTitleBarStyle(TitleBarStyle style) async {
+  Future<void> setTitleBarStyle(TitleBarStyle style, {int captionHeight = 32}) async {
     _checkInitialized();
     // No-op on web - browsers control the title bar
   }
