@@ -391,7 +391,9 @@ class DecoratedWindowWin32 extends DecoratedWindow {
   @override
   void startWindowMoveDrag(Offset globalPosition) {
     ReleaseCapture();
-    SendMessage(_hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION), LPARAM(0));
+    // PostMessage avoids a nested modal pump re-entering Flutter
+    // from the caller's gesture-callback stack.
+    PostMessage(_hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION), LPARAM(0));
   }
 
   @override
