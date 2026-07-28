@@ -16,4 +16,4 @@ flutter run -d macos    # or -d windows, -d linux
 
 The example's `macos/Runner/AppDelegate.swift` is set up to create the
 `FlutterEngine` manually so that Flutter's multi-view can be enabled by
-`RegularWindowController`. See the top-level `README.md` for details.
+`WindowController`. See the top-level `README.md` for details.

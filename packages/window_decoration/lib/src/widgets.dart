@@ -133,7 +133,7 @@ class MinimizeButton extends StatefulWidget {
 ///
 /// This button triggers same action as native close button would,
 /// meaning that the action can be prevented by overriding
-/// [RegularWindowControllerDelegate.onWindowCloseRequested].
+/// [WindowControllerDelegate.onWindowCloseRequested].
 class CloseButton extends StatefulWidget {
   const CloseButton({super.key, required this.builder, this.enabled = true});
 
@@ -234,7 +234,7 @@ class _MinimizeButtonState extends State<MinimizeButton> {
 
   void _onPressed() {
     final controller = WindowScope.of(context);
-    if (controller is RegularWindowController) {
+    if (controller is WindowController) {
       controller.setMinimized(true);
     } else if (controller is DialogWindowController) {
       controller.setMinimized(true);
@@ -280,14 +280,14 @@ class _MaximizeButtonState extends _FrameReportingState<MaximizeButton> {
   }
 
   void _onPressed() {
-    final controller = WindowScope.of(context) as RegularWindowController;
+    final controller = WindowScope.of(context) as WindowController;
     controller.setMaximized(!controller.isMaximized);
   }
 
   BaseWindowController? _controller;
   bool _lastMaximized = false;
   final _buttonNode = FocusNode();
-  bool get _isMaximized => (_controller as RegularWindowController).isMaximized;
+  bool get _isMaximized => (_controller as WindowController).isMaximized;
 
   @override
   void didChangeDependencies() {
@@ -396,7 +396,7 @@ class _WindowDragAreaState extends _FrameReportingState<WindowDragArea> {
     }
     final controller = WindowScope.of(context);
     if (decoratedWindow?.titlebarNeedsDoubleClickDetector() == true &&
-        controller is RegularWindowController) {
+        controller is WindowController) {
       gestures[_DoubleTapToMaximizeGestureRecognizer] =
           GestureRecognizerFactoryWithHandlers<
             _DoubleTapToMaximizeGestureRecognizer
@@ -486,7 +486,7 @@ class _WindowBorderState extends State<WindowBorder> with WindowDelegateLinux {
     }
     _controller?.removeDelegate(this);
     if (controller is WindowControllerLinux) {
-      _controller = controller as WindowControllerLinux;
+      _controller = controller;
       _controller!.addDelegate(this);
     }
     super.didChangeDependencies();

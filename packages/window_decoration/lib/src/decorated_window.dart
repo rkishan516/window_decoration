@@ -35,16 +35,16 @@ abstract class DecoratedWindow {
   }) {
     if (controller is WindowControllerMacOS) {
       return DecoratedWindowMacOS(
-        controller as WindowControllerMacOS,
+        controller,
         onClose: onClose,
       );
     } else if (controller is WindowControllerWin32) {
       return DecoratedWindowWin32(
-        controller as WindowControllerWin32,
+        controller,
         onClose: onClose,
       );
     } else if (controller is WindowControllerLinux) {
-      return DecoratedWindowLinux(controller as WindowControllerLinux);
+      return DecoratedWindowLinux(controller);
     } else {
       return null;
     }

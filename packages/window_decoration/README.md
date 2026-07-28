@@ -1,7 +1,7 @@
 # window_decoration
 
 Fully custom windows and decorations for Flutter desktop, designed to work with
-Flutter's experimental multi-window API (`RegularWindowController`).
+Flutter's experimental multi-window API (`WindowController`).
 
 `window_decoration` 0.2.x is a single pure-Dart Flutter package. Platform code
 for macOS and Linux is shipped as native source and built via Dart's native
@@ -64,12 +64,12 @@ import 'package:window_decoration/window_decoration.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  final controller = RegularWindowController(
+  final controller = WindowController(
     preferredSize: const Size(800, 600),
     title: 'My App',
   );
   controller.enableDecoratedWindow();
-  runWidget(RegularWindow(controller: controller, child: MyApp()));
+  runWidget(Window(controller: controller, child: MyApp()));
 }
 
 class MyTitleBar extends StatelessWidget {
@@ -143,7 +143,7 @@ Shared methods available on all platforms (via the base class):
 - `setVisible({required bool visible})` / `show()` / `hide()`
 
 For fullscreen, maximize, minimize, size, and constraints, use
-`RegularWindowController` directly.
+`WindowController` directly.
 
 ## Required native setup
 

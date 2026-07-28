@@ -9,14 +9,14 @@ import 'package:window_decoration/window_decoration.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  final controller = RegularWindowController(
-    preferredSize: const Size(900, 700),
+  final controller = WindowController(
+    size: const Size(900, 700),
     title: 'Window Decoration Demo',
   );
   controller.enableDecoratedWindow();
 
   runWidget(
-    RegularWindow(
+    Window(
       controller: controller,
       child: _DemoApp(controller: controller),
     ),
@@ -26,7 +26,7 @@ void main() {
 class _DemoApp extends StatelessWidget {
   const _DemoApp({required this.controller});
 
-  final RegularWindowController controller;
+  final WindowController controller;
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +42,7 @@ class _DemoApp extends StatelessWidget {
 class _DemoHome extends StatefulWidget {
   const _DemoHome({required this.controller});
 
-  final RegularWindowController controller;
+  final WindowController controller;
 
   @override
   State<_DemoHome> createState() => _DemoHomeState();
@@ -269,7 +269,7 @@ class _SectionHeader extends StatelessWidget {
 class _TitleBar extends StatelessWidget {
   const _TitleBar({required this.controller});
 
-  final RegularWindowController controller;
+  final WindowController controller;
 
   @override
   Widget build(BuildContext context) {
