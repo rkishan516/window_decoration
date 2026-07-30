@@ -287,7 +287,13 @@ class _MaximizeButtonState extends _FrameReportingState<MaximizeButton> {
   BaseWindowController? _controller;
   bool _lastMaximized = false;
   final _buttonNode = FocusNode();
-  bool get _isMaximized => (_controller as WindowController).isMaximized;
+  bool get _isMaximized {
+    final controller = _controller;
+    if (controller is! WindowController || controller.isDestroyed) {
+      return _lastMaximized;
+    }
+    return controller.isMaximized;
+  }
 
   @override
   void didChangeDependencies() {
@@ -299,6 +305,10 @@ class _MaximizeButtonState extends _FrameReportingState<MaximizeButton> {
 
   void _controllerListener() {
     if (!mounted) {
+      return;
+    }
+    final controller = _controller;
+    if (controller == null || controller.isDestroyed) {
       return;
     }
     if (_isMaximized != _lastMaximized) {
