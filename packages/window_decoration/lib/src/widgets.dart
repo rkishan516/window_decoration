@@ -19,10 +19,7 @@ import 'package:flutter/src/widgets/_window_linux.dart';
 ///
 /// To mark sub-areas that should not trigger dragging, use [WindowDragExcludeArea].
 class WindowDragArea extends StatefulWidget {
-  const WindowDragArea({
-    super.key,
-    required this.child,
-  });
+  const WindowDragArea({super.key, required this.child});
 
   final Widget child;
 
@@ -33,10 +30,7 @@ class WindowDragArea extends StatefulWidget {
 /// Represents area within [WindowDragArea] that should not trigger window dragging.
 /// This is typically used for toolbar or tabs that are placed inside title bar.
 class WindowDragExcludeArea extends StatefulWidget {
-  const WindowDragExcludeArea({
-    super.key,
-    required this.child,
-  });
+  const WindowDragExcludeArea({super.key, required this.child});
 
   final Widget child;
 
@@ -97,11 +91,7 @@ class TitlebarButtonState {
 /// Supports displaying [snap layout](https://support.microsoft.com/en-us/windows/snap-your-windows-885a9b1e-a983-a3b1-16cd-c531795e6241)
 /// on Windows when hovered.
 class MaximizeButton extends StatefulWidget {
-  const MaximizeButton({
-    super.key,
-    required this.builder,
-    this.enabled = true,
-  });
+  const MaximizeButton({super.key, required this.builder, this.enabled = true});
 
   final Widget Function(
     BuildContext context,
@@ -260,6 +250,12 @@ class _MinimizeButtonState extends State<MinimizeButton> {
 class _MaximizeButtonState extends _FrameReportingState<MaximizeButton> {
   @override
   Widget build(BuildContext context) {
+    final controller = WindowScope.of(context);
+    final isDestroyed = WindowScope.isDestroyedOf(context);
+    final isEnabled =
+        widget.enabled && !isDestroyed && controller is WindowController;
+    final isMaximized = isEnabled && WindowScope.isMaximizedOf(context);
+
     return WindowDragExcludeArea(
       child: Button(
         builder: (context, buttonState, child) {
@@ -270,42 +266,24 @@ class _MaximizeButtonState extends _FrameReportingState<MaximizeButton> {
               hovered: buttonState.hovered,
               pressed: buttonState.pressed,
             ),
-            _isMaximized,
+            isMaximized,
           );
         },
         focusNode: _buttonNode,
-        onPressed: widget.enabled ? _onPressed : null,
+        onPressed: isEnabled ? _onPressed : null,
       ),
     );
   }
 
   void _onPressed() {
-    final controller = WindowScope.of(context) as WindowController;
+    final controller = WindowScope.of(context);
+    if (controller is! WindowController || controller.isDestroyed) {
+      return;
+    }
     controller.setMaximized(!controller.isMaximized);
   }
 
-  BaseWindowController? _controller;
-  bool _lastMaximized = false;
   final _buttonNode = FocusNode();
-  bool get _isMaximized => (_controller as WindowController).isMaximized;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _controller?.removeListener(_controllerListener);
-    _controller = WindowScope.of(context);
-    _controller!.addListener(_controllerListener);
-  }
-
-  void _controllerListener() {
-    if (!mounted) {
-      return;
-    }
-    if (_isMaximized != _lastMaximized) {
-      _lastMaximized = _isMaximized;
-      setState(() {});
-    }
-  }
 
   @override
   void initState() {
@@ -318,7 +296,6 @@ class _MaximizeButtonState extends _FrameReportingState<MaximizeButton> {
   void dispose() {
     super.dispose();
     _buttonNode.dispose();
-    _controller?.removeListener(_controllerListener);
   }
 
   @override
