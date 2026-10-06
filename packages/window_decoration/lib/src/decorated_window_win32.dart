@@ -17,6 +17,12 @@ import 'win32_util.dart';
 // See https://learn.microsoft.com/windows/win32/inputdev/wm-mouseactivate
 const int _kMaNoActivate = 3;
 
+// Undocumented messages uxtheme uses to paint the classic caption and frame.
+// Windows 10 sends them on activation and title changes, drawing the native
+// title bar over a frameless window. Chromium suppresses them the same way.
+const int _kWmNcUahDrawCaption = 0x00AE;
+const int _kWmNcUahDrawFrame = 0x00AF;
+
 // DWM attributes such as `DWMWA_CAPTION_COLOR`, `DWMWA_BORDER_COLOR`,
 // `DWMWA_WINDOW_CORNER_PREFERENCE`, and `DWMWA_SYSTEMBACKDROP_TYPE`
 // require Windows 11 (Build 22000+). Calling them on Windows 10 returns
@@ -146,11 +152,14 @@ class DecoratedWindowWin32 extends DecoratedWindow {
       >('FlutterDesktopGetDpiForHWND');
 
   static void _makeWindowUndecorated(HWND hwnd) {
+    // Windows 10 keeps drawing its own caption over the client area of any
+    // window with `WS_CAPTION`, even when `WM_NCCALCSIZE` leaves it no room.
+    final caption = _isWindows11OrLater ? WS_CAPTION : 0;
     SetWindowLongPtr(
       hwnd,
       GWL_STYLE,
       WS_THICKFRAME |
-          WS_CAPTION |
+          caption |
           WS_SYSMENU |
           WS_MAXIMIZEBOX |
           WS_MINIMIZEBOX |
@@ -169,6 +178,44 @@ class DecoratedWindowWin32 extends DecoratedWindow {
           SWP_NOZORDER |
           SWP_NOACTIVATE,
     );
+  }
+
+  /// Without `WS_CAPTION` the system maximizes over the taskbar, so size the
+  /// maximized window to the work area plus the frame that `WM_NCCALCSIZE`
+  /// trims off.
+  static void _fitMaximizedToWorkArea(HWND hwnd, int lParam) {
+    final info = malloc<MONITORINFO>();
+    try {
+      info.ref.cbSize = sizeOf<MONITORINFO>();
+      final monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      if (!GetMonitorInfo(monitor, info)) return;
+      final dpi = _getDpiForWindow(hwnd.cast());
+      final padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi).value;
+      final borderLR = GetSystemMetricsForDpi(SM_CXFRAME, dpi).value + padding;
+      final borderTB = GetSystemMetricsForDpi(SM_CYFRAME, dpi).value + padding;
+      final work = info.ref.rcWork;
+      final screen = info.ref.rcMonitor;
+      final minMax = Pointer<MINMAXINFO>.fromAddress(lParam).ref;
+      minMax.ptMaxPosition.x = work.left - screen.left - borderLR;
+      minMax.ptMaxPosition.y = work.top - screen.top - borderTB;
+      minMax.ptMaxSize.x = work.right - work.left + 2 * borderLR;
+      minMax.ptMaxSize.y = work.bottom - work.top + 2 * borderTB;
+    } finally {
+      malloc.free(info);
+    }
+  }
+
+  /// Runs the default handler with `WS_VISIBLE` cleared so it cannot paint
+  /// the native caption, then restores the style.
+  static int _withoutRedraw(HWND hwnd, int message, int wParam, int lParam) {
+    final style = GetWindowLongPtr(hwnd, GWL_STYLE).value;
+    final visible = (style & WS_VISIBLE) != 0;
+    if (visible) SetWindowLongPtr(hwnd, GWL_STYLE, style & ~WS_VISIBLE);
+    try {
+      return DefSubclassProc(hwnd, message, WPARAM(wParam), LPARAM(lParam));
+    } finally {
+      if (visible) SetWindowLongPtr(hwnd, GWL_STYLE, style);
+    }
   }
 
   final _dragExcludeRects = <BuildContext, Rect>{};
@@ -231,7 +278,28 @@ class DecoratedWindowWin32 extends DecoratedWindow {
       case WM_SIZE:
         if (wParam == SIZE_MINIMIZED) return 0;
         break;
+      case WM_GETMINMAXINFO:
+        if (_isWindows11OrLater) break;
+        // Let the engine apply its size constraints first.
+        DefSubclassProc(windowHandle, message, WPARAM(wParam), LPARAM(lParam));
+        _fitMaximizedToWorkArea(windowHandle, lParam);
+        return 0;
+      case WM_NCACTIVATE when !_isWindows11OrLater:
+        // An lParam of -1 keeps the activation change but skips repainting
+        // the non-client area, which would draw the native caption.
+        DefSubclassProc(windowHandle, message, WPARAM(wParam), LPARAM(-1));
+        return 1;
+      case WM_NCPAINT || _kWmNcUahDrawCaption || _kWmNcUahDrawFrame
+          when !_isWindows11OrLater:
+        return 0;
+      case WM_SETTEXT || WM_SETICON when !_isWindows11OrLater:
+        return _withoutRedraw(windowHandle, message, wParam, lParam);
       case WM_NCCALCSIZE:
+        // On Windows 10 the restored window has no frame at all; any strip
+        // left to the system is painted with stale content.
+        if (wParam == 1 && !_isWindows11OrLater && !IsZoomed(_hwnd)) {
+          return 0;
+        }
         if (wParam == 1) {
           final dpi = _getDpiForWindow(windowHandle.cast());
           int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi).value;
@@ -266,8 +334,9 @@ class DecoratedWindowWin32 extends DecoratedWindow {
         final height = (rect.ref.bottom - rect.ref.top) / scale;
         malloc.free(rect);
 
-        const edgeSize = 1;
-        const topEdgeSize = 3;
+        // Windows 10 has no frame outside the client area to resize from.
+        final edgeSize = _isWindows11OrLater ? 1 : 4;
+        final topEdgeSize = _isWindows11OrLater ? 3 : 4;
 
         if (_maximizeButtonRects.values.any((r) => r.contains(Offset(x, y)))) {
           return HTMAXBUTTON;
